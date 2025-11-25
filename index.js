@@ -57,13 +57,24 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // await client.connect();
+    await client.connect();
 
     const db = client.db("zap_shift_db");
-    const userConnection = db.collection("users");
+    const userCollection = db.collection("users");
     const parcelConnection = db.collection("parcels");
     const paymentsCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
+
+    // middleware verifyAdmin allowing admin activity
+    // must be used after verifyFBToken middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+      const user = await userCollection.findOne({ email });
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
 
     // user related Api's
     app.post("/users", async (req, res) => {
@@ -71,21 +82,65 @@ async function run() {
       user.role = "user";
       user.createdAt = new Date();
       const email = user.email;
-      const userExits = await userConnection.findOne({ email });
+      const userExits = await userCollection.findOne({ email });
       if (userExits) {
         return res.send({ message: "User exits" });
       }
 
-      const result = await userConnection.insertOne(user);
+      const result = await userCollection.insertOne(user);
       res.send(result);
     });
+
+    // part - 6 start here's
+    app.get("/users", verifyFBToken, async (req, res) => {
+      const searchText = req.query.searchText;
+      const query = {};
+      if (searchText) {
+        // query.displayName = { $regex: searchText, $options: "i" };
+        query.$or = [{ displayName: { $regex: searchText, $options: "i" } }];
+        query.$or = [{ email: { $regex: searchText, $options: "i" } }];
+      }
+      const cursor = await userCollection.find(query).toArray();
+      res.send(cursor);
+    });
+
+    // Admin, users, rider role check
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await userCollection.findOne(query);
+      res.send({ role: user?.role || "user" });
+    });
+
+    app.patch(
+      "/users/:id/role",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const roleInfo = req.body;
+
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            role: roleInfo.role,
+          },
+        };
+
+        const result = await userCollection.updateOne(query, updateDoc);
+        res.send(result);
+      }
+    );
 
     // parcels api
     app.get("/parcels", async (req, res) => {
       const query = {};
-      const { email } = req.query;
+      const { email, deliveryStatus } = req.query;
       if (email) {
         query.senderEmail = email;
+      }
+      if (deliveryStatus) {
+        query.deliveryStatus = deliveryStatus;
       }
 
       const cursor = await parcelConnection
@@ -208,6 +263,7 @@ async function run() {
         const update = {
           $set: {
             paymentStatus: "paid",
+            deliveryStatus: "pending-pickup",
             trackingId: trackingId,
           },
         };
@@ -281,13 +337,14 @@ async function run() {
       res.send(cursor);
     });
 
-    app.patch("/riders/:id", verifyFBToken, async (req, res) => {
+    app.patch("/riders/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const status = req.body.status;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const updateDoc = {
         $set: {
           status: status,
+          workStatus: "available",
         },
       };
 
@@ -301,7 +358,7 @@ async function run() {
             role: "rider",
           },
         };
-        const userResult = await userConnection.updateOne(
+        const userResult = await userCollection.updateOne(
           userQuery,
           updateUser
         );
@@ -310,10 +367,10 @@ async function run() {
       res.send(result);
     });
 
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    await client.db("admin").command({ ping: 1 });
+    console.log(
+      "Pinged your deployment. You successfully connected to MongoDB!"
+    );
   } finally {
   }
 }
@@ -324,5 +381,5 @@ app.get("/", (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`This is port ${3000}`);
+  console.log(`This is port ${port}`);
 });
