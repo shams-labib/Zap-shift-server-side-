@@ -157,17 +157,47 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/parcels/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await parcelConnection.deleteOne(query);
-      res.send(result);
-    });
-
     app.post("/parcels", async (req, res) => {
       const parcel = req.body;
       parcel.createdAt = new Date();
       const result = await parcelConnection.insertOne(parcel);
+      res.send(result);
+    });
+
+    app.patch("/parcels/:id", async (req, res) => {
+      const { riderId, riderName, riderEmail } = req.body;
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          deliveryStatus: "delivery_assigned",
+          riderId: riderId,
+          riderName: riderName,
+          riderEmail: riderEmail,
+        },
+      };
+
+      const result = await parcelConnection.updateOne(query, updatedDoc);
+
+      // update rider information
+      const riderQuery = { _id: new ObjectId(riderId) };
+      const riderUpdatedDoc = {
+        $set: {
+          workStatus: "in_delivery",
+        },
+      };
+
+      const riderResult = await ridersCollection.updateOne(
+        riderQuery,
+        riderUpdatedDoc
+      );
+      res.send(riderResult);
+    });
+
+    app.delete("/parcels/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await parcelConnection.deleteOne(query);
       res.send(result);
     });
 
@@ -232,7 +262,7 @@ async function run() {
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
       });
 
-      console.log(session);
+      // console.log(session);
       res.send({ url: session.url });
     });
 
@@ -329,9 +359,17 @@ async function run() {
     });
 
     app.get("/riders", async (req, res) => {
+      const { status, district, workStatus } = req.query;
+
       const query = {};
-      if (req.query.status) {
-        query.status = req.query.status;
+      if (status) {
+        query.status = status;
+      }
+      if (district) {
+        query.district = district;
+      }
+      if (workStatus) {
+        query.workStatus = workStatus;
       }
       const cursor = await ridersCollection.find(query).toArray();
       res.send(cursor);
