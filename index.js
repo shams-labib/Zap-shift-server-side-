@@ -9,7 +9,14 @@ const app = express();
 
 const admin = require("firebase-admin");
 
-const serviceAccount = require("./firebase-key.json");
+// const serviceAccount = require("./firebase-key.json");
+
+// const serviceAccount = require("./firebase-admin-key.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -38,6 +45,7 @@ const verifyFBToken = async (req, res, next) => {
 };
 
 const crypto = require("crypto");
+const { count } = require("console");
 function genarateTrackingId() {
   const prefix = "";
   const date = new Date().toISOString().slice(0, 10).replace(/-g/);
@@ -57,7 +65,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     const db = client.db("zap_shift_db");
     const userCollection = db.collection("users");
@@ -72,6 +80,17 @@ async function run() {
       const email = req.decoded_email;
       const user = await userCollection.findOne({ email });
       if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
+    // VerifyRider Middleware
+
+    const verifyRider = async (req, res, next) => {
+      const email = req.decoded_email;
+      const user = await userCollection.findOne({ email });
+      if (!user || user.role !== "rider") {
         return res.status(403).send({ message: "forbidden access" });
       }
       next();
@@ -272,6 +291,27 @@ async function run() {
       res.send(result);
     });
 
+    // Part - 8 Introduce mongoDB Pipeline
+
+    app.get("/parcels/delivery-status/stats", async (req, res) => {
+      const pipeline = [
+        {
+          $group: {
+            _id: "$deliveryStatus",
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            status: "$_id",
+            count: 1,
+          },
+        },
+      ];
+      const result = await parcelConnection.aggregate(pipeline).toArray();
+      res.send(result);
+    });
+
     // payment related Api's
 
     app.post("/payment-checkout-session", async (req, res) => {
@@ -383,19 +423,17 @@ async function run() {
           trackingId: trackingId,
         };
 
-        if (session.payment_status === "paid") {
-          const resultPayment = await paymentsCollection.insertOne(payment);
+        const resultPayment = await paymentsCollection.insertOne(payment);
 
-          logTracking(trackingId, "parcel_paid");
+        logTracking(trackingId, "parcel_paid");
 
-          return res.send({
-            success: true,
-            modifyParcel: result,
-            paymentInfo: resultPayment,
-            trackingId: trackingId,
-            transactionId: session.payment_intent,
-          });
-        }
+        return res.send({
+          success: true,
+          modifyParcel: result,
+          paymentInfo: resultPayment,
+          trackingId: trackingId,
+          transactionId: session.payment_intent,
+        });
 
         // res.send(result);
       }
@@ -424,15 +462,6 @@ async function run() {
 
     // riders related Api's
 
-    app.post("/riders", async (req, res) => {
-      const rider = req.body;
-      rider.status = "pending";
-      rider.createdAt = new Date();
-
-      const result = await ridersCollection.insertOne(rider);
-      res.send(result);
-    });
-
     app.get("/riders", async (req, res) => {
       const { status, district, workStatus } = req.query;
 
@@ -448,6 +477,66 @@ async function run() {
       }
       const cursor = await ridersCollection.find(query).toArray();
       res.send(cursor);
+    });
+
+    // part-8 riders getting interface api's
+    app.get("/riders/delivery-per-day", async (req, res) => {
+      const email = req.query.email;
+      // aggregate on parcel
+      const pipeline = [
+        {
+          $match: {
+            riderEmail: email,
+            deliveryStatus: "parcel_delivered",
+          },
+        },
+        {
+          $lookup: {
+            from: "trackings",
+            localField: "trackingId",
+            foreignField: "trackingId",
+            as: "parcel_trackings",
+          },
+        },
+        {
+          $unwind: "$parcel_trackings",
+        },
+        {
+          $match: {
+            "parcel_trackings.status": "parcel_delivered",
+          },
+        },
+        {
+          // convert timestamp to YYYY-MM-DD string
+          $addFields: {
+            deliveryDay: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$parcel_trackings.createdAt",
+              },
+            },
+          },
+        },
+        {
+          // group by date
+          $group: {
+            _id: "$deliveryDay",
+            deliveredCount: { $sum: 1 },
+          },
+        },
+      ];
+
+      const result = await parcelConnection.aggregate(pipeline).toArray();
+      res.send(result);
+    });
+
+    app.post("/riders", async (req, res) => {
+      const rider = req.body;
+      rider.status = "pending";
+      rider.createdAt = new Date();
+
+      const result = await ridersCollection.insertOne(rider);
+      res.send(result);
     });
 
     app.patch("/riders/:id", verifyFBToken, verifyAdmin, async (req, res) => {
@@ -489,10 +578,10 @@ async function run() {
       res.send(result);
     });
 
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
   }
 }
